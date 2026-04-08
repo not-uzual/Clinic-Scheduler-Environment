@@ -228,10 +228,10 @@ def get_model_action_with_system(
     hour_context = {
         1: "Hour 1 of 8. Starting hour.",
         2: "Hour 2 of 8. Demand ramping up.",
-        3: "⚠️ PEAK SURGE STARTS! High arrivals expected.",
-        4: "🔴 PEAK SURGE CONTINUES! Heavy traffic.",
-        5: "🔴 PEAK SURGE ENDING! Still intense.",
-        6: "📉 Back to normal demand. Clear queues.",
+        3: "[ALERT] PEAK SURGE STARTS! High arrivals expected.",
+        4: "[!!] PEAK SURGE CONTINUES! Heavy traffic.",
+        5: "[!!] PEAK SURGE ENDING! Still intense.",
+        6: "[DOWN] Back to normal demand. Clear queues.",
         7: "Hour 7. Almost done. Final push.",
         8: "Hour 8. FINAL HOUR. End of shift.",
     }.get(step, "Hour X/8.")
@@ -366,7 +366,7 @@ def main() -> None:
     total_score = 0.0
     for task_name in ["easy", "medium", "hard"]:
         result = task_results[task_name]
-        status = "✅ PASS" if result["success"] else "❌ FAIL"
+        status = "[PASS]" if result["success"] else "[FAIL]"
         avg_reward = sum(result["rewards"]) / len(result["rewards"]) if result["rewards"] else 0.0
         print(
             f"{task_name.upper():8} {status:8} score={result['score']:.4f} "
