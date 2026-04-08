@@ -1,6 +1,5 @@
 ---
 title: Clinic Scheduler Environment
-emoji: 
 colorFrom: blue
 colorTo: green
 sdk: docker
