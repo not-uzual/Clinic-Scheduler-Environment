@@ -196,7 +196,7 @@ ClinicObservation(
 ## Reward Function
 
 **Formula**:
-$$\text{reward} = 2.0 - (\text{avg\_wait} + 1.0 \times \text{no\_shows})$$
+$$\text{reward} = 3.0 - (\text{avg\_wait} + 1.0 \times \text{no\_shows})$$
 
 Where:
 - `avg_wait = total_wait_time / total_patients` (average waiting time per patient)
@@ -206,11 +206,11 @@ Where:
 
 | Scenario | Calculation | Reward |
 |----------|-------------|--------|
-| **Perfect** (0 wait, 0 no-shows) | 2.0 - (0 + 0) | **+2.0** ✅ |
-| **Good** (1.0 wait, 0.5 no-shows) | 2.0 - (1.0 + 0.5) | **+0.5** ⚠️ |
-| **Okay** (1.5 wait, 1.0 no-shows) | 2.0 - (1.5 + 1.0) | **-0.5** ❌ |
-| **Bad** (2.0 wait, 2.0 no-shows) | 2.0 - (2.0 + 2.0) | **-2.0** ❌ |
-| **Terrible** (2.5 wait, 3.0 no-shows) | 2.0 - (2.5 + 3.0) | **-3.5** 💥 |
+| **Perfect** (0 wait, 0 no-shows) | 3.0 - (0 + 0) | **+3.0** ✅ |
+| **Good** (1.0 wait, 0.5 no-shows) | 3.0 - (1.0 + 0.5) | **+1.5** ✅ |
+| **Okay** (1.5 wait, 1.0 no-shows) | 3.0 - (1.5 + 1.0) | **+0.5** ⚠️ |
+| **Bad** (2.0 wait, 2.0 no-shows) | 3.0 - (2.0 + 2.0) | **-1.0** ❌ |
+| **Terrible** (2.5 wait, 3.0 no-shows) | 3.0 - (2.5 + 3.0) | **-2.5** 💥 |
 
 ### Why Continuous Rewards Matter
 
@@ -227,17 +227,16 @@ Where:
 - **Strategy**: Keep `patients_waiting` low by planning appropriate ratio
 
 #### 2. No-Shows Penalty (1.0x multiplier)
-- Most expensive metric in the reward
-- `no_shows_this_hour = random.uniform(0, reserved_slots/2.0)`
-  - More reserved slots → higher no-show risk
-  - But also → predictability
-- **Strategy**: Balance reserved slots (predictable but risky) vs walk-ins (unpredictable but reliable)
+- Realistic penalty for unreliable reservations
+- `no_shows_this_hour = random.uniform(0, reserved_slots * 0.10)` (~0.4-1.0/hour)
+- More reserved slots → higher no-show risk
+- **Strategy**: Balance reserved slots (predictability) vs walk-ins (reliability)
 
-#### 3. Baseline (2.0)
+#### 3. Baseline (3.0)
 - Allows both positive and negative rewards
-- Agent can make clearly "bad" decisions and learn from them
-- Baseline too high → all rewards look good (no learning)
-- Baseline too low → all rewards look bad (no motivation)
+- More realistic given typical no-show rates (~10% of reserved slots)
+- Perfect performance (+3.0) requires minimal wait and no-shows
+- Good performance (1.0-2.0) is achievable with strategic planning
 
 ## Peak Demand Challenge
 
@@ -411,11 +410,13 @@ HTTP API endpoints:
 - `/reset` - `POST` → `ClinicObservation`
 - `/step` - `POST` with action → `ClinicObservation` + reward
 
-#### `inference.py` - LLM Agent
-Complete example:
-- Loads OpenAI client (HF router)
-- Runs 8-hour episode with Qwen2.5 decisions
-- Outputs required format: `[START]`, `[STEP]` x 8, `[END]`
+#### `inference.py` - Multi-Task Graded Evaluation ⭐
+OpenEnv compliance implementation:
+- Runs **3 graded tasks** (easy, medium, hard)
+- **Deterministic graders** scoring 0.0 < score < 1.0
+- Task-specific system prompts and difficulty levels
+- Programmatic success/failure criteria
+- Full [START]/[STEP]/[END] output format with grader scores
 
 ---
 
@@ -446,11 +447,11 @@ action = ClinicAction(walk_in_ratio=0.4)
 3. Treat patients: `min(2.5, 1.0)` → 1 treated, 1.5 still waiting
 4. Update wait time: `total_wait_time = 0.0 + 2.5 = 2.5`
 5. No-shows: `random.uniform(0, 6/2)` → 1.8 patients no-show (reserved slots high!)
+6. Calculate reward:4/10)` → 0.3 patients no-show (realistic rate)
 6. Calculate reward:
    - `avg_wait = 2.5 / 2.5 = 1.0`
-   - `no_shows = 1.8`
-   - `reward = 2.0 - (1.0 + 1.8) = -0.8` ❌ (high penalty from no-shows!)
-
+   - `no_shows = 0.3`
+   - `reward = 3.0 - (1.0 + 0.3) = 1.7` ✅ (good performance
 **Hour 1 - Agent receives**:
 ```python
 result = env.step(action)
@@ -459,9 +460,9 @@ result = env.step(action)
 # observation.walk_in_slots = 4
 # observation.reserved_slots = 6
 # observation.reward = -0.8
+# observation.done = Fa1.7
 # observation.done = False
-# observation.info = {'avg_wait': 1.0, 'no_shows': 1.8, 'hour': 1}
-```
+# observation.info = {'avg_wait': 1.0, 'no_shows': 0.3
 
 **Agent learns**: 
 - Too many reserved slots (0.4 ratio) → high no-shows (1.8) → reward penalized
@@ -478,10 +479,10 @@ result = env.step(action)
 
 ### Reward Interpretation
 - **Reward > 1.5**: Excellent! Low wait, minimal no-shows
-- **Reward 0.5-1.5**: Good management
-- **Reward -0.5 to 0.5**: Okay, some issues
-- **Reward < -0.5**: Bad decisions (high no-shows or wait)
-
+- **Reward 0.2.0**: Excellent! Low wait, minimal no-shows
+- **Reward 1.0-2.0**: Good management
+- **Reward 0-1.0**: Okay, some issues
+- **Reward < 0
 ### Key Insight
 **No-shows are the biggest penalty** - they hurt twice:
 1. Cost capacity (1.0x multiplier directly)
@@ -492,14 +493,62 @@ Minimize no-shows by increasing walk-in ratio!
 
 ---
 
+## OpenEnv Compliance: Graded Tasks
+
+The environment includes **3 graded tasks** (easy → medium → hard) with programmatic graders that score agent performance **strictly between 0.0 and 1.0**.
+
+### Task Definitions
+
+| Task | Difficulty | Description | Baseline Arrivals | Peak Surge | Success Threshold |
+|------|-----------|-------------|-------------------|-----------|-------------------|
+| **easy** | 🟢 Easy | Low demand, no peaks | 0.5-2.0/hour | None | > 0.65 |
+| **medium** | 🟡 Medium | Balanced with peaks | 1-4/hour | 4-7/hour (hours 3-5) | > 0.50 |
+| **hard** | 🔴 Hard | High demand, aggressive surge | 2-5/hour | 5.5-9/hour (hours 3-5) | > 0.35 |
+
+### Grader Scoring
+
+Each task has a **deterministic grader** that evaluates:
+- **Average reward** (primary metric)
+- **Episode completion** (bonus points)
+- **Reward trajectory** (consistency)
+
+**Scoring Formula** (task-dependent):
+- Easy: `0.1 + 0.8 * normalize(avg_reward)` → range (0.05, 0.95)
+- Medium: `0.15 + 0.7 * normalize(avg_reward)` → range (0.1, 0.9)
+- Hard: `0.1 + 0.8 * normalize(avg_reward)` → range (0.05, 0.95)
+
+**Completion Bonus**: +0.02 for finishing all 8 steps
+
+**Final Score**: Strictly in range **[0.01, 0.99]** ✅
+
+### Running Graded Tasks
+
+```bash
+# Run all 3 graded tasks
+python inference.py
+
+# Output format:
+# [START] task=easy env=clinic_scheduler model=Qwen/Qwen2.5-72B-Instruct
+# [STEP] step=1 action=walk_in_ratio=0.45 reward=1.23 done=false error=null
+# [STEP] step=2 action=walk_in_ratio=0.52 reward=0.87 done=false error=null
+# ...
+# [END] task=easy success=true steps=8 rewards=[1.23,0.87,...] grader_score=0.7234
+#
+# TASK SUMMARY
+# EASY    ✅ PASS  score=0.7234 avg_reward=+1.05 steps=8/8
+# MEDIUM  ✅ PASS  score=0.6145 avg_reward=+0.73 steps=8/8
+# HARD    ⚠️  PASS  score=0.4567 avg_reward=-0.12 steps=8/8
+# ==============================================================
+# Average Score: 0.5982 (range 0.0-1.0)
+```
 ## Configuration
 
 Edit `.env` for:
-- `API_KEY`: Hugging Face token (for LLM inference)
-- `API_BASE_URL`: LLM endpoint (default: HF router)
-- `MODEL_NAME`: Model to use (default: Qwen/Qwen2.5-72B-Instruct)
-- `LOCAL_IMAGE_NAME`: Docker image name
-
+- `OPENAI_API_KEY`: OpenAI or Hugging Face token (required for inference)
+- `API_KEY`: Alternative name for the token (backward compatible)
+- `API_BASE_URL`: LLM endpoint (default: `https://router.huggingface.co/v1`)
+- `MODEL_NAME`: Model to use (default: `Qwen/Qwen2.5-72B-Instruct`)
+- `LOCAL_IMAGE_NAME`: Docker image name (default: `clinic_scheduler-env:latest`)
 ---
 
 ## Support & Questions
