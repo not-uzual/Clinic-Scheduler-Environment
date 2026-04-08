@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
-CMD ["python", "-m", "clinic_scheduler.server.app"]
+CMD ["uvicorn", "clinic_scheduler.server.app:app", "--host", "0.0.0.0", "--port", "8000"]

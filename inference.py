@@ -126,15 +126,15 @@ class TaskGrader:
             # Easy: expect higher avg rewards (baseline 2.0-3.0)
             # Formula: lower_bound + coefficient * normalized_reward
             normalized = (avg_reward + 1.0) / 3.5  # Normalize to ~0-1 range
-            score = 0.15 + 0.75 * normalized  # Maps -1→0.15, 2.5→0.88
+            score = 0.15 + 0.75 * normalized  # Maps -1->0.15, 2.5->0.88
         elif task == "medium":
             # Medium: balanced rewards (baseline 1.0-2.5)
             normalized = (avg_reward + 0.5) / 2.5  # Normalize -0.5 to 2.0
-            score = 0.2 + 0.65 * normalized  # Maps -0.5→0.2, 2.0→0.85
+            score = 0.2 + 0.65 * normalized  # Maps -0.5->0.2, 2.0->0.85
         else:  # hard
             # Hard: lower expected rewards (baseline -0.5 to 2.0)
             normalized = (avg_reward + 3.0) / 4.5  # Normalize -3 to 1.5
-            score = 0.1 + 0.8 * normalized  # Maps -3→0.1, 1.5→0.8
+            score = 0.1 + 0.8 * normalized  # Maps -3->0.1, 1.5->0.8
         
         # Add completion bonus only if all steps were taken
         if len(rewards) == MAX_STEPS:

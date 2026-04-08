@@ -1,6 +1,6 @@
 ---
 title: Clinic Scheduler Environment
-emoji: 🏥
+emoji: 
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -109,8 +109,8 @@ action = ClinicAction(walk_in_ratio=0.6)
 | `walk_in_ratio` | float | [0.1, 0.9] | % of 10 slots allocated to walk-ins |
 
 **Example**:
-- `walk_in_ratio=0.6` → 6 walk-in slots, 4 reserved slots
-- `walk_in_ratio=0.2` → 2 walk-in slots, 8 reserved slots
+- `walk_in_ratio=0.6` -> 6 walk-in slots, 4 reserved slots
+- `walk_in_ratio=0.2` -> 2 walk-in slots, 8 reserved slots
 
 **Strategic Decision**:
 - **High ratio (0.7-0.9)**: More walk-ins, fewer no-shows, but less predictability
@@ -229,7 +229,7 @@ Where:
 #### 2. No-Shows Penalty (1.0x multiplier)
 - Realistic penalty for unreliable reservations
 - `no_shows_this_hour = random.uniform(0, reserved_slots * 0.10)` (~0.4-1.0/hour)
-- More reserved slots → higher no-show risk
+- More reserved slots -> higher no-show risk
 - **Strategy**: Balance reserved slots (predictability) vs walk-ins (reliability)
 
 #### 3. Baseline (3.0)
@@ -249,8 +249,8 @@ The environment includes a **realistic stress test**:
 **Hours 3-5** (PEAK SURGE):
 - 4-7 arrivals/hour (2x volume!)
 - Forces strategic decisions
-- Too low ratio → massive queues, high wait times
-- Too high ratio → too many walk-ins, can't control
+- Too low ratio -> massive queues, high wait times
+- Too high ratio -> too many walk-ins, can't control
 
 **Graph** (Approximate arrivals):
 ```
@@ -343,7 +343,7 @@ for hour in range(8):
     action = ClinicAction(walk_in_ratio=ratio)
     
     result = env.step(action)
-    print(f"Hour {hour+1}: ratio={ratio:.2f} → reward={result.reward:.2f}")
+    print(f"Hour {hour+1}: ratio={ratio:.2f} -> reward={result.reward:.2f}")
     
     if result.done:
         break
@@ -407,8 +407,8 @@ Core environment logic:
 #### `server/app.py` - FastAPI Server
 HTTP API endpoints:
 - `/` - Health check
-- `/reset` - `POST` → `ClinicObservation`
-- `/step` - `POST` with action → `ClinicObservation` + reward
+- `/reset` - `POST` -> `ClinicObservation`
+- `/step` - `POST` with action -> `ClinicObservation` + reward
 
 #### `inference.py` - Multi-Task Graded Evaluation ⭐
 OpenEnv compliance implementation:
@@ -438,16 +438,16 @@ result = env.reset()
 **Hour 1 - Agent decides**:
 ```python
 action = ClinicAction(walk_in_ratio=0.4)
-# → 4 walk-in slots, 6 reserved slots
+# -> 4 walk-in slots, 6 reserved slots
 ```
 
 **Hour 1 - Simulation**:
-1. Generate arrivals: `random.uniform(1.0, 4.0)` → says 2.5 patients arrive
+1. Generate arrivals: `random.uniform(1.0, 4.0)` -> says 2.5 patients arrive
 2. Add to queue: `patients_waiting = 0.0 + 2.5 = 2.5`
-3. Treat patients: `min(2.5, 1.0)` → 1 treated, 1.5 still waiting
+3. Treat patients: `min(2.5, 1.0)` -> 1 treated, 1.5 still waiting
 4. Update wait time: `total_wait_time = 0.0 + 2.5 = 2.5`
-5. No-shows: `random.uniform(0, 6/2)` → 1.8 patients no-show (reserved slots high!)
-6. Calculate reward:4/10)` → 0.3 patients no-show (realistic rate)
+5. No-shows: `random.uniform(0, 6/2)` -> 1.8 patients no-show (reserved slots high!)
+6. Calculate reward:4/10)` -> 0.3 patients no-show (realistic rate)
 6. Calculate reward:
    - `avg_wait = 2.5 / 2.5 = 1.0`
    - `no_shows = 0.3`
@@ -465,7 +465,7 @@ result = env.step(action)
 # observation.info = {'avg_wait': 1.0, 'no_shows': 0.3
 
 **Agent learns**: 
-- Too many reserved slots (0.4 ratio) → high no-shows (1.8) → reward penalized
+- Too many reserved slots (0.4 ratio) -> high no-shows (1.8) -> reward penalized
 - Next hour should increase ratio to reduce reserved slots
 
 ---
@@ -495,7 +495,7 @@ Minimize no-shows by increasing walk-in ratio!
 
 ## OpenEnv Compliance: Graded Tasks
 
-The environment includes **3 graded tasks** (easy → medium → hard) with programmatic graders that score agent performance **strictly between 0.0 and 1.0**.
+The environment includes **3 graded tasks** (easy -> medium -> hard) with programmatic graders that score agent performance **strictly between 0.0 and 1.0**.
 
 ### Task Definitions
 
@@ -513,9 +513,9 @@ Each task has a **deterministic grader** that evaluates:
 - **Reward trajectory** (consistency)
 
 **Scoring Formula** (task-dependent):
-- Easy: `0.1 + 0.8 * normalize(avg_reward)` → range (0.05, 0.95)
-- Medium: `0.15 + 0.7 * normalize(avg_reward)` → range (0.1, 0.9)
-- Hard: `0.1 + 0.8 * normalize(avg_reward)` → range (0.05, 0.95)
+- Easy: `0.1 + 0.8 * normalize(avg_reward)` -> range (0.05, 0.95)
+- Medium: `0.15 + 0.7 * normalize(avg_reward)` -> range (0.1, 0.9)
+- Hard: `0.1 + 0.8 * normalize(avg_reward)` -> range (0.05, 0.95)
 
 **Completion Bonus**: +0.02 for finishing all 8 steps
 
