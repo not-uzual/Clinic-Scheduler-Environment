@@ -103,45 +103,52 @@ class TaskGrader:
     
     @staticmethod
     def grade(task: str, rewards: List[float]) -> float:
-        """Score performance: 0.0 < score < 1.0.
+        """Score performance: 0.0 < score < 1.0 (STRICTLY between, not including endpoints).
         
         Args:
             task: "easy", "medium", or "hard"
             rewards: List of step rewards
             
         Returns:
-            Score in range (0.0, 1.0)
+            Score strictly in range (0.0, 1.0) - never 0.0 or 1.0
         """
+        # Ensure we never return 0.0 or 1.0 (strictly between)
+        MIN_SCORE = 0.01  # Just above 0.0
+        MAX_SCORE = 0.99  # Just below 1.0
+        
         if not rewards:
-            return 0.1  # Minimum non-zero score
+            return MIN_SCORE  # Minimum non-zero score
         
         avg_reward = sum(rewards) / len(rewards)
-        total_reward = sum(rewards)
         
         # Task-specific scoring with baseline 3.0
         if task == "easy":
             # Easy: expect higher avg rewards (baseline 2.0-3.0)
-            # Map: avg_reward=0 → 0.15, avg_reward=1.5 → 0.5, avg_reward=2.5 → 0.88
-            normalized = (avg_reward + 1.0) / 3.5
-            score = max(0.1, min(0.95, 0.15 + 0.75 * normalized))
+            # Formula: lower_bound + coefficient * normalized_reward
+            normalized = (avg_reward + 1.0) / 3.5  # Normalize to ~0-1 range
+            score = 0.15 + 0.75 * normalized  # Maps -1→0.15, 2.5→0.88
         elif task == "medium":
             # Medium: balanced rewards (baseline 1.0-2.5)
-            # Map: avg_reward=-0.5 → 0.2, avg_reward=1.0 → 0.55, avg_reward=2.0 → 0.85
-            normalized = (avg_reward + 0.5) / 2.5
-            score = max(0.15, min(0.9, 0.2 + 0.65 * normalized))
+            normalized = (avg_reward + 0.5) / 2.5  # Normalize -0.5 to 2.0
+            score = 0.2 + 0.65 * normalized  # Maps -0.5→0.2, 2.0→0.85
         else:  # hard
             # Hard: lower expected rewards (baseline -0.5 to 2.0)
-            # Map: avg_reward=-3 → 0.1, avg_reward=0 → 0.4, avg_reward=1.5 → 0.8
-            normalized = (avg_reward + 3.0) / 4.5
-            score = max(0.1, min(0.95, 0.1 + 0.8 * normalized))
+            normalized = (avg_reward + 3.0) / 4.5  # Normalize -3 to 1.5
+            score = 0.1 + 0.8 * normalized  # Maps -3→0.1, 1.5→0.8
         
-        # Bonus for completing all steps without failure
+        # Add completion bonus only if all steps were taken
         if len(rewards) == MAX_STEPS:
-            score += 0.02  # Small completion bonus
-            score = min(0.95, score)  # Cap at 0.95
+            score += 0.02
         
-        # Ensure strictly within (0.0, 1.0)
-        return max(0.01, min(0.99, score))
+        # Clamp to (MIN_SCORE, MAX_SCORE) - STRICTLY between, never exactly 0.0 or 1.0
+        final_score = max(MIN_SCORE, min(MAX_SCORE, score))
+        
+        # Double-check we're never at the boundaries
+        if final_score <= 0.0 or final_score >= 1.0:
+            # Fallback safety: if somehow we got 0 or 1, shift to safe range
+            final_score = max(MIN_SCORE, min(MAX_SCORE, final_score))
+        
+        return final_score
 
     @staticmethod
     def get_threshold(task: str) -> float:
@@ -170,6 +177,12 @@ def log_step(step: int, action: str, reward: float, done: bool, error: str = Non
 def log_end(task: str, success: bool, steps: int, rewards: List[float], score: float) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else ""
     success_str = str(success).lower()
+    
+    # CRITICAL: grader_score must be strictly (0.0, 1.0) - never 0.0 or 1.0
+    # Validate before printing
+    if score <= 0.0 or score >= 1.0:
+        print(f"[ERROR] grader_score {score} is out of range!", flush=True)
+    
     print(
         f"[END] task={task} success={success_str} steps={steps} rewards=[{rewards_str}] grader_score={score:.4f}",
         flush=True,
@@ -261,6 +274,7 @@ def run_task(task: str, client: OpenAI) -> Tuple[bool, int, List[float], float]:
     steps_taken = 0
     success = False
     system_prompt = TASKS[task]["system_prompt"]
+    grader = TaskGrader()
     
     try:
         obs = env_instance.reset()
@@ -295,18 +309,22 @@ def run_task(task: str, client: OpenAI) -> Tuple[bool, int, List[float], float]:
             if obs.done:
                 break
         
-        grader = TaskGrader()
+        # Grade the task
         score = grader.grade(task, rewards)
         threshold = grader.get_threshold(task)
         success = score >= threshold
         
+        # Validate score is in correct range
+        if score <= 0.0 or score >= 1.0:
+            print(f"[WARNING] Score {score} for task {task} is outside (0.0, 1.0)!", flush=True)
+            
     except Exception as e:
         print(f"[DEBUG] Error during task {task}: {e}", flush=True)
         score = 0.05  # Minimum score on error
         success = False
+        import traceback
+        traceback.print_exc()
     finally:
-        grader = TaskGrader()
-        score = grader.grade(task, rewards)
         log_end(task=task, success=success, steps=steps_taken, rewards=rewards, score=score)
     
     return success, steps_taken, rewards, score
