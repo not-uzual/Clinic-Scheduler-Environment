@@ -27,12 +27,13 @@ TASKS = {
 
 
 class TaskGrader:
-    _EPS = 0.01
+    _MIN_SCORE = 0.10
+    _MAX_SCORE = 0.90
 
     @staticmethod
     def score_episode(task: str, final_obs, rewards: list[float], steps_taken: int) -> float:
         if not rewards:
-            return TaskGrader._EPS
+            return TaskGrader._MIN_SCORE
 
         avg_reward = sum(rewards) / len(rewards)
         total_no_shows = final_obs.info.get("total_no_shows", 0)
@@ -68,7 +69,9 @@ class TaskGrader:
 
         # Sigmoid squash — mathematically impossible to return exactly 0.0 or 1.0
         sigmoid = 1.0 / (1.0 + math.exp(-4.0 * (raw - 0.5)))
-        return min(max(sigmoid, TaskGrader._EPS), 1.0 - TaskGrader._EPS)
+
+        # Hard clamp to strict (0.10, 0.90) range
+        return min(max(sigmoid, TaskGrader._MIN_SCORE), TaskGrader._MAX_SCORE)
 
     @staticmethod
     def threshold(task: str) -> float:
@@ -93,7 +96,7 @@ def log_step(step: int, action: float, reward: float, done: bool) -> None:
 def log_end(task: str, success: bool, steps: int, rewards: List[float], score: float) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] task={task} success={str(success).lower()} steps={steps} rewards=[{rewards_str}] grader_score={score:.4f}",
+        f"[END] task={task} success={str(success).lower()} steps={steps} score={score:.4f} rewards={rewards_str}",
         flush=True,
     )
 
