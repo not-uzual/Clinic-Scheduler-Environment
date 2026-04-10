@@ -1,3 +1,4 @@
+import math
 import os
 import textwrap
 from typing import List, Tuple
@@ -26,13 +27,12 @@ TASKS = {
 
 
 class TaskGrader:
+    _EPS = 0.01
+
     @staticmethod
     def score_episode(task: str, final_obs, rewards: list[float], steps_taken: int) -> float:
         if not rewards:
-            return 0.01
-
-        min_score = 0.01
-        max_score = 0.99
+            return TaskGrader._EPS
 
         avg_reward = sum(rewards) / len(rewards)
         total_no_shows = final_obs.info.get("total_no_shows", 0)
@@ -66,7 +66,9 @@ class TaskGrader:
         if steps_taken == MAX_STEPS:
             raw += 0.02
 
-        return max(min_score, min(max_score, raw))
+        # Sigmoid squash — mathematically impossible to return exactly 0.0 or 1.0
+        sigmoid = 1.0 / (1.0 + math.exp(-4.0 * (raw - 0.5)))
+        return min(max(sigmoid, TaskGrader._EPS), 1.0 - TaskGrader._EPS)
 
     @staticmethod
     def threshold(task: str) -> float:
