@@ -1,6 +1,5 @@
 ---
 title: Clinic Scheduler Environment
-emoji: 🏥
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -214,17 +213,221 @@ params = {
 - Uvicorn ASGI runner
 
 ### Key Files
+# Clinic Scheduler Environment
 
-- `server/app.py` - FastAPI application
-- `server/clinic_scheduler_environment.py` - Environment logic
-- `client.py` - HTTP client
-- `models.py` - Type definitions
-- `inference.py` - Task evaluation script
+An OpenEnv-compatible reinforcement learning environment for clinic appointment scheduling.
 
-### Docker
+The agent learns how to allocate clinic capacity between walk-in patients and reserved appointments in order to reduce wait time, no-shows, and queue buildup across different demand levels.
 
-Built with Docker for easy deployment. Runs FastAPI server on 0.0.0.0:8000.
+## Problem Statement
 
-## License
+Clinics have limited hourly capacity and must balance:
+- Walk-in demand.
+- Reserved appointments.
+- No-shows.
+- Queue buildup during peak hours.
 
-MIT
+This environment turns that scheduling problem into a compact RL benchmark with three difficulty settings:
+- `easy`
+- `medium`
+- `hard`
+
+The agent chooses a `walk_in_ratio` each step to control how much capacity is reserved for walk-ins versus scheduled patients.
+
+## Why this environment matters
+
+This is a realistic resource-allocation problem with competing goals:
+- Keep wait times low.
+- Avoid wasted capacity from no-shows.
+- Handle demand spikes.
+- Maintain stable performance across task difficulty levels.
+
+The environment is designed to be simple enough to train on, but rich enough to expose scheduling tradeoffs.
+
+## Repository Structure
+
+```text
+clinic_scheduler/
+├── models.py
+├── client.py
+├── inference.py
+├── openenv.yaml
+├── pyproject.toml
+├── server/
+│   ├── app.py
+│   └── clinic_scheduler_environment.py
+└── README.md
+```
+
+## Environment Design
+
+### Action
+- `walk_in_ratio: float`
+- Range: `0.1` to `0.9`
+
+### Observation
+The environment returns:
+- current hour
+- walk-in queue
+- reserved queue
+- walk-in slots
+- reserved slots
+- task difficulty
+- reward
+- done flag
+- info dictionary with summary metrics
+
+### Reward
+The reward is penalty-based and reflects:
+- queue backlog
+- no-shows
+- idle capacity
+- allocation mismatch
+
+Negative rewards are expected here because the environment models costs.
+
+## Difficulty Levels
+
+### Easy
+Low demand and mild variability. Designed to test basic scheduling behavior.
+
+### Medium
+Balanced demand with a peak period. Requires better allocation decisions.
+
+### Hard
+Higher baseline demand with stronger peak pressure. This is the most difficult setting.
+
+## How It Works
+
+At each step:
+1. The agent chooses a `walk_in_ratio`.
+2. The environment splits capacity into walk-in and reserved slots.
+3. New clinic demand arrives.
+4. Patients are served based on the chosen allocation.
+5. The environment returns:
+   - the next observation,
+   - the step reward,
+   - whether the episode is finished,
+   - summary metrics in `info`.
+
+## Setup
+
+### 1. Create and activate environment
+```bash
+python -m venv openenv-clinic-scheduler
+source openenv-clinic-scheduler/bin/activate
+```
+
+On Windows:
+```bash
+python -m venv openenv-clinic-scheduler
+openenv-clinic-scheduler\Scripts\activate
+```
+
+### 2. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+If you are using `uv`:
+```bash
+uv sync
+```
+
+### 3. Set environment variables
+Create a `.env` file or export these in your shell:
+
+```bash
+OPENAI_API_KEY=your_api_key_here
+API_BASE_URL=https://router.huggingface.co/v1
+MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
+```
+
+## Run the environment server
+
+```bash
+python -m server.app
+```
+
+The server runs on:
+```text
+http://localhost:8000
+```
+
+## Run the inference script
+
+```bash
+python inference.py
+```
+
+This runs all three tasks:
+- easy
+- medium
+- hard
+
+It prints:
+- step-by-step actions,
+- rewards,
+- task-level score,
+- final summary.
+
+## Expected Output
+
+The script logs each run with:
+- `[START]`
+- `[STEP]`
+- `[END]`
+
+At the end, it prints a task summary with:
+- score
+- average reward
+- steps completed
+
+## Hackathon Evaluation
+
+This submission is designed to be judged on:
+- OpenEnv compatibility
+- meaningful reward shaping
+- difficulty separation
+- reproducible execution
+- clear clinic-scheduling realism
+
+The benchmark is calibrated so:
+- easy should generally score higher than medium,
+- medium should generally score higher than hard.
+
+## Notes on Rewards
+
+The rewards are intentionally negative in many steps because the environment models penalties such as:
+- wait time,
+- backlog,
+- idle capacity,
+- no-shows.
+
+In RL, negative rewards are normal when the task is framed as cost minimization.
+
+## Demo Flow
+
+A typical demo flow is:
+
+1. Start the server.
+2. Run `inference.py`.
+3. Show the three task scores.
+4. Explain how different `walk_in_ratio` choices affect clinic efficiency.
+
+## Example Use Case
+
+This environment can be used to explore:
+- allocation policy learning,
+- queue management,
+- scheduling under uncertainty,
+- healthcare operations optimization.
+
+## Submission Checklist
+
+Before submission, make sure:
+- the environment runs locally,
+- the inference script completes all three tasks,
+- the README explains setup and usage,
+- the repo is public,
+- the demo is reproducible.

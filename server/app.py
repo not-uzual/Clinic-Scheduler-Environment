@@ -1,18 +1,28 @@
 from openenv.core.env_server import create_fastapi_app
-from clinic_scheduler.models import ClinicAction, ClinicObservation
-from clinic_scheduler.server.clinic_scheduler_environment import ClinicSchedulerEnvironment
+
+from models import ClinicAction, ClinicObservation
+from server.clinic_scheduler_environment import ClinicSchedulerEnvironment
 
 
-app = create_fastapi_app(ClinicSchedulerEnvironment, ClinicAction, ClinicObservation)
+def create_environment() -> ClinicSchedulerEnvironment:
+    return ClinicSchedulerEnvironment(task="medium", seed=42)
 
 
-def main():
+app = create_fastapi_app(
+    create_environment,
+    ClinicAction,
+    ClinicObservation,
+)
+
+
+def main() -> None:
     import uvicorn
+
     uvicorn.run(
-        "clinic_scheduler.server.app:app",
+        "server.app:app",
         host="0.0.0.0",
         port=8000,
-        reload=True
+        reload=True,
     )
 
 

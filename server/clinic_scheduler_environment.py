@@ -1,108 +1,144 @@
-import uuid
 import random
+import uuid
+from typing import Optional
+
 from openenv.core.env_server import Environment
-from clinic_scheduler.models import ClinicAction, ClinicObservation, ClinicState
+from models import ClinicAction, ClinicObservation, ClinicState
 
 
 class ClinicSchedulerEnvironment(Environment):
+    SUPPORTS_CONCURRENT_SESSIONS = True
+
     MAX_TIME = 8
     TOTAL_SLOTS = 10
-    
-    def __init__(self, task: str = "medium"):
-        """Initialize environment with task difficulty.
-        
-        Args:
-            task: "easy" (low demand, simple), "medium" (balanced), "hard" (peak surge)
-        """
-        super().__init__()
-        self.task = task
-        self._state = ClinicState(
-            episode_id="",
-            hour=0,
-            patients_waiting=0.0,
-            total_patients=0.0,
-            total_wait_time=0.0,
-            no_shows=0.0,
-            walk_in_slots=6,
-            reserved_slots=4,
-        )
 
-    def reset(self) -> ClinicObservation:
+    def __init__(self, task: str = "medium", seed: Optional[int] = None):
+        super().__init__()
+        self.task = task if task in {"easy", "medium", "hard"} else "medium"
+        self.rng = random.Random(seed)
+        self._state = ClinicState(task=self.task)
+
+    def reset(self, seed: Optional[int] = None, episode_id: Optional[str] = None, **kwargs) -> ClinicObservation:
+        if seed is not None:
+            self.rng.seed(seed)
+
         self._state = ClinicState(
-            episode_id=str(uuid.uuid4()),
+            episode_id=episode_id or str(uuid.uuid4()),
+            step_count=0,
             hour=0,
-            patients_waiting=0.0,
-            total_patients=0.0,
-            total_wait_time=0.0,
-            no_shows=0.0,
-            walk_in_slots=6,
-            reserved_slots=4,
+            walk_in_queue=0,
+            reserved_queue=0,
+            total_walk_in_arrivals=0,
+            total_reserved_arrivals=0,
+            total_served=0,
+            total_no_shows=0,
+            cumulative_wait_cost=0.0,
+            walk_in_slots=5,
+            reserved_slots=5,
+            task=self.task,
         )
         return self._to_observation(reward=0.0, done=False)
 
-    def _to_observation(self, reward: float, done: bool) -> ClinicObservation:
-        avg_wait = (
-            self._state.total_wait_time / (self._state.total_patients + 1e-6)
-        )
+    def _arrival_profile(self) -> tuple[int, int, int, int]:
+        peak = self._state.hour in {2, 3, 4}
+
+        if self.task == "easy":
+            return (0, 2, 1, 2) if not peak else (0, 2, 1, 2)
+        if self.task == "medium":
+            return (1, 3, 1, 3) if not peak else (3, 5, 2, 4)
+        return (2, 4, 2, 4) if not peak else (4, 6, 3, 5)
+
+    def _no_show_rate(self) -> float:
+        if self.task == "easy":
+            return 0.08
+        if self.task == "medium":
+            return 0.12
+        return 0.18
+
+    def _to_observation(self, reward: float | None, done: bool) -> ClinicObservation:
         return ClinicObservation(
-            patients_waiting=self._state.patients_waiting,
+            hour=self._state.hour,
+            walk_in_queue=self._state.walk_in_queue,
+            reserved_queue=self._state.reserved_queue,
             walk_in_slots=self._state.walk_in_slots,
             reserved_slots=self._state.reserved_slots,
-            hour=self._state.hour,
+            demand_level=self.task,
             reward=reward,
             done=done,
             info={
-                "avg_wait": avg_wait,
-                "no_shows": self._state.no_shows,
-                "hour": self._state.hour,
-                "task": self.task,
+                "total_served": self._state.total_served,
+                "total_no_shows": self._state.total_no_shows,
+                "cumulative_wait_cost": round(self._state.cumulative_wait_cost, 2),
+                "step_count": self._state.step_count,
             },
         )
 
-    def _get_arrival_range(self) -> tuple:
-        """Get arrival range based on task difficulty and hour."""
-        is_peak = self._state.hour in [2, 3, 4]
-        
-        if self.task == "easy":
-            # Low demand, no peaks
-            return (0.5, 2.0) if not is_peak else (0.5, 2.0)
-        elif self.task == "medium":
-            # Balanced with peaks
-            return (1.0, 4.0) if not is_peak else (4.0, 7.0)
-        else:  # hard
-            # High demand, aggressive peaks
-            return (2.0, 5.0) if not is_peak else (5.5, 9.0)
+    def step(self, action: ClinicAction, timeout_s=None, **kwargs) -> ClinicObservation:
+        s = self._state
 
-    def step(self, action: ClinicAction) -> ClinicObservation:
         ratio = max(0.1, min(0.9, action.walk_in_ratio))
-        self._state.walk_in_slots = round(self.TOTAL_SLOTS * ratio)
-        self._state.reserved_slots = self.TOTAL_SLOTS - self._state.walk_in_slots
+        s.walk_in_slots = int(round(self.TOTAL_SLOTS * ratio))
+        s.walk_in_slots = min(max(s.walk_in_slots, 1), 9)
+        s.reserved_slots = self.TOTAL_SLOTS - s.walk_in_slots
 
-        min_arr, max_arr = self._get_arrival_range()
-        arrivals = random.uniform(min_arr, max_arr)
-        
-        self._state.patients_waiting += arrivals
-        self._state.total_patients += arrivals
+        w_min, w_max, r_min, r_max = self._arrival_profile()
+        new_walk_ins = self.rng.randint(w_min, w_max)
+        new_reserved = self.rng.randint(r_min, r_max)
 
-        treated = min(self._state.patients_waiting, 1.0)
-        self._state.patients_waiting -= treated
+        s.walk_in_queue += new_walk_ins
+        s.reserved_queue += new_reserved
+        s.total_walk_in_arrivals += new_walk_ins
+        s.total_reserved_arrivals += new_reserved
 
-        self._state.total_wait_time += arrivals
+        reserved_candidates = min(s.reserved_queue, s.reserved_slots)
+        no_shows = sum(
+            1 for _ in range(reserved_candidates)
+            if self.rng.random() < self._no_show_rate()
+        )
 
-        # No-shows: realistic rate (10% of reserved slots, ~0.4-1.0 per hour)
-        max_no_show_rate = self._state.reserved_slots * 0.10
-        no_shows_this_hour = random.uniform(0.0, max_no_show_rate)
-        self._state.no_shows += no_shows_this_hour
+        reserved_served = max(0, reserved_candidates - no_shows)
+        walk_in_served = min(s.walk_in_queue, s.walk_in_slots)
 
-        self._state.hour += 1
+        reserved_idle = max(0, s.reserved_slots - reserved_candidates)
+        walk_in_idle = max(0, s.walk_in_slots - min(s.walk_in_queue, s.walk_in_slots))
+        idle_slots = reserved_idle + walk_in_idle
 
-        avg_wait = self._state.total_wait_time / (self._state.total_patients + 1e-6)
-        # Reward: baseline 3.0 minus penalties. Perfect (0 wait, 0 no-shows) = +3.0
-        reward = 3.0 - (avg_wait + 1.0 * self._state.no_shows)
+        s.reserved_queue -= reserved_served
+        s.walk_in_queue -= walk_in_served
+        s.total_served += reserved_served + walk_in_served
+        s.total_no_shows += no_shows
 
-        done = self._state.hour >= self.MAX_TIME
+        reserved_backlog = s.reserved_queue
+        walk_in_backlog = s.walk_in_queue
 
-        return self._to_observation(reward=reward, done=done)
+        service_bonus = 0.18 * (reserved_served + walk_in_served)
+        queue_penalty = 0.42 * reserved_backlog + 0.28 * walk_in_backlog
+        no_show_penalty = 0.60 * no_shows
+        idle_penalty = 0.25 * idle_slots
+
+        demand_gap = abs(
+            (new_walk_ins / max(1, new_walk_ins + new_reserved)) - ratio
+        )
+        allocation_penalty = 0.18 * demand_gap
+
+        reward = (
+            service_bonus
+            - queue_penalty
+            - no_show_penalty
+            - idle_penalty
+            - allocation_penalty
+        )
+
+        s.cumulative_wait_cost += reserved_backlog + walk_in_backlog
+        s.step_count += 1
+        s.hour += 1
+
+        done = s.hour >= self.MAX_TIME
+
+        return self._to_observation(
+            reward=round(reward, 3),
+            done=done,
+        )
 
     @property
     def state(self) -> ClinicState:

@@ -1,385 +1,197 @@
-"""
-Clinic Scheduler Inference Script with Task Graders
-=====================================================
-Runs 3 graded tasks (easy, medium, hard) with OpenEnv compliance.
-Each task has a programmatic grader that scores 0.0 < score < 1.0.
-
-MANDATORY ENVIRONMENT VARIABLES:
-    OPENAI_API_KEY  Your OpenAI API key (or HF token if using HF router)
-    API_BASE_URL    (optional) API endpoint (default: HF router)
-    MODEL_NAME      (optional) Model to use (default: Qwen/Qwen2.5-72B-Instruct)
-"""
-
 import os
 import textwrap
 from typing import List, Tuple
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 from openai import OpenAI
-from client import ClinicEnv, ClinicAction
+
+from models import ClinicAction
 from server.clinic_scheduler_environment import ClinicSchedulerEnvironment
 
-# Load environment variables
 load_dotenv()
 
 API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-TASK_NAME = "clinic-scheduling"
-BENCHMARK = "clinic_scheduler"
 MAX_STEPS = 8
-TEMPERATURE = 0.7
-MAX_TOKENS = 100
+TEMPERATURE = 0.2
+MAX_TOKENS = 32
 
-# Task Definitions
 TASKS = {
-    "easy": {
-        "description": "Low demand (0.5-2.0 arrivals/hour). Simple ratio decisions.",
-        "system_prompt": textwrap.dedent("""
-            You are scheduling a low-demand clinic (0.5-2 patients/hour).
-            This is a BASIC TASK: Simple decisions, minimal complexity.
-            
-            Task Objective: Minimize wait times and no-shows.
-            - Walk-in ratio: 0.1-0.9 (decide EACH hour)
-            - Only 1 patient/hour treatment capacity (bottleneck!)
-            - Reward = 3.0 - (avg_wait + no_shows)
-            - Perfect = +3.0 (no wait, no no-shows)
-            
-            Strategy: Balanced ratio (0.4-0.6) works well here.
-            Output: Only a decimal number 0.1-0.9 (the ratio), nothing else.
-        """).strip(),
-    },
-    "medium": {
-        "description": "Balanced demand with peak surge (hours 3-5). Requires strategic planning.",
-        "system_prompt": textwrap.dedent("""
-            You are scheduling a clinic with PEAK SURGE (hours 3-5).
-            This is a MODERATE TASK: Requires strategic anticipation.
-            
-            Task Objective: Manage peak hours effectively.
-            - Normal hours: 1-4 patients/hour
-            - PEAK hours (3-5): 4-7 patients/hour SURGE!
-            - Only 1 patient/hour treatment capacity
-            - Reward = 3.0 - (avg_wait + no_shows)
-            - Perfect = +3.0
-            - Bad peak decisions = NEGATIVE rewards
-            
-            Strategy: 
-            - Hours 1-2: Conservative (0.3-0.4 ratio)
-            - Hours 3-5: Aggressive (0.7-0.9 ratio) to handle surge
-            - Hours 6-8: Moderate (0.5-0.6 ratio)
-            
-            Output: Only decimal 0.1-0.9, nothing else.
-        """).strip(),
-    },
-    "hard": {
-        "description": "High demand with aggressive peak surge. Demanding optimization required.",
-        "system_prompt": textwrap.dedent("""
-            You are scheduling a HIGH-DEMAND clinic with AGGRESSIVE SURGE.
-            This is a HARD TASK: Requires optimal strategic planning.
-            
-            Task Objective: Navigate extreme conditions optimally.
-            - Normal hours: 2-5 patients/hour (high baseline)
-            - PEAK hours (3-5): 5.5-9 patients/hour AGGRESSIVE SURGE!
-            - Only 1 patient/hour treatment capacity (critical bottleneck!)
-            - Reward = 3.0 - (avg_wait + no_shows)
-            - Perfect = +3.0
-            - Poor decisions = VERY NEGATIVE rewards (-2 to -4)
-            
-            Challenge: Queue buildup is inevitable. Minimize damage.
-            Strategy:
-            - Hours 1-2: Very low ratio (0.2-0.3) to prepare reserves
-            - Hours 3-5: Maximum walk-in (0.85-0.95) for surge
-            - Hours 6-8: High ratio (0.7-0.8) to clear queue
-            
-            Output: Only decimal 0.1-0.9, nothing else.
-        """).strip(),
-    },
+    "easy": "Low demand clinic with mild variability.",
+    "medium": "Balanced clinic with a midday demand surge.",
+    "hard": "High demand clinic with strong peak-hour pressure.",
 }
 
 
 class TaskGrader:
-    """Grades task performance with scores strictly in (0.0, 1.0)."""
-    
     @staticmethod
-    def grade(task: str, rewards: List[float]) -> float:
-        """Score performance: 0.0 < score < 1.0 (STRICTLY between, not including endpoints).
-        
-        Args:
-            task: "easy", "medium", or "hard"
-            rewards: List of step rewards
-            
-        Returns:
-            Score strictly in range (0.0, 1.0) - never 0.0 or 1.0
-        """
-        # Ensure we never return 0.0 or 1.0 (strictly between)
-        MIN_SCORE = 0.01  # Just above 0.0
-        MAX_SCORE = 0.99  # Just below 1.0
-        
-        if not rewards:
-            return MIN_SCORE  # Minimum non-zero score
-        
-        avg_reward = sum(rewards) / len(rewards)
-        
-        # Task-specific scoring with baseline 3.0
+    def score_episode(task: str, final_obs, rewards: list[float], steps_taken: int) -> float:
+        min_score = 0.01
+        max_score = 0.99
+
+        avg_reward = sum(rewards) / len(rewards) if rewards else -10.0
+        total_no_shows = final_obs.info.get("total_no_shows", 0)
+        total_served = final_obs.info.get("total_served", 0)
+
+        final_walk_in_queue = getattr(final_obs, "walk_in_queue", 0)
+        final_reserved_queue = getattr(final_obs, "reserved_queue", 0)
+        final_backlog = final_walk_in_queue + final_reserved_queue
+
         if task == "easy":
-            # Easy: expect higher avg rewards (baseline 2.0-3.0)
-            # Formula: lower_bound + coefficient * normalized_reward
-            normalized = (avg_reward + 1.0) / 3.5  # Normalize to ~0-1 range
-            score = 0.15 + 0.75 * normalized  # Maps -1->0.15, 2.5->0.88
+            served_score = min(1.0, total_served / 18.0)
+            backlog_score = max(0.0, 1.0 - final_backlog / 5.0)
+            reward_score = max(0.0, min(1.0, (avg_reward + 4.0) / 4.0))
+            no_show_score = max(0.0, 1.0 - total_no_shows / 3.0)
+            raw = 0.25 * served_score + 0.35 * backlog_score + 0.25 * reward_score + 0.15 * no_show_score
+
         elif task == "medium":
-            # Medium: balanced rewards (baseline 1.0-2.5)
-            normalized = (avg_reward + 0.5) / 2.5  # Normalize -0.5 to 2.0
-            score = 0.2 + 0.65 * normalized  # Maps -0.5->0.2, 2.0->0.85
-        else:  # hard
-            # Hard: lower expected rewards (baseline -0.5 to 2.0)
-            normalized = (avg_reward + 3.0) / 4.5  # Normalize -3 to 1.5
-            score = 0.1 + 0.8 * normalized  # Maps -3->0.1, 1.5->0.8
-        
-        # Add completion bonus only if all steps were taken
-        if len(rewards) == MAX_STEPS:
-            score += 0.02
-        
-        # Clamp to (MIN_SCORE, MAX_SCORE) - STRICTLY between, never exactly 0.0 or 1.0
-        final_score = max(MIN_SCORE, min(MAX_SCORE, score))
-        
-        # Double-check we're never at the boundaries
-        if final_score <= 0.0 or final_score >= 1.0:
-            # Fallback safety: if somehow we got 0 or 1, shift to safe range
-            final_score = max(MIN_SCORE, min(MAX_SCORE, final_score))
-        
-        return final_score
+            served_score = min(1.0, total_served / 24.0)
+            backlog_score = max(0.0, 1.0 - final_backlog / 8.0)
+            reward_score = max(0.0, min(1.0, (avg_reward + 5.0) / 5.0))
+            no_show_score = max(0.0, 1.0 - total_no_shows / 5.0)
+            raw = 0.20 * served_score + 0.40 * backlog_score + 0.25 * reward_score + 0.15 * no_show_score
+
+        else:
+            served_score = min(1.0, total_served / 30.0)
+            backlog_score = max(0.0, 1.0 - final_backlog / 8.0)
+            reward_score = max(0.0, min(1.0, (avg_reward + 6.0) / 6.0))
+            no_show_score = max(0.0, 1.0 - total_no_shows / 7.0)
+            raw = 0.10 * served_score + 0.50 * backlog_score + 0.25 * reward_score + 0.15 * no_show_score
+
+        if steps_taken == MAX_STEPS:
+            raw += 0.02
+
+        return max(min_score, min(max_score, raw))
 
     @staticmethod
-    def get_threshold(task: str) -> float:
-        """Success threshold for each task (strictly between 0-1)."""
-        thresholds = {
-            "easy": 0.50,    # 50% score needed (easy = simple)
-            "medium": 0.48,  # 48% score needed
-            "hard": 0.35,    # 35% score needed
-        }
-        return thresholds.get(task, 0.5)
+    def threshold(task: str) -> float:
+        return {
+            "easy": 0.60,
+            "medium": 0.52,
+            "hard": 0.45,
+        }[task]
+
+def log_start(task: str, model: str) -> None:
+    print(f"[START] task={task} model={model}", flush=True)
 
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
-
-
-def log_step(step: int, action: str, reward: float, done: bool, error: str = None) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
+def log_step(step: int, action: float, reward: float, done: bool) -> None:
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        f"[STEP] step={step} action=walk_in_ratio={action:.2f} reward={reward:.3f} done={str(done).lower()}",
         flush=True,
     )
 
 
 def log_end(task: str, success: bool, steps: int, rewards: List[float], score: float) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else ""
-    success_str = str(success).lower()
-    
-    # CRITICAL: grader_score must be strictly (0.0, 1.0) - never 0.0 or 1.0
-    # Validate before printing
-    if score <= 0.0 or score >= 1.0:
-        print(f"[ERROR] grader_score {score} is out of range!", flush=True)
-    
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] task={task} success={success_str} steps={steps} rewards=[{rewards_str}] grader_score={score:.4f}",
+        f"[END] task={task} success={str(success).lower()} steps={steps} rewards=[{rewards_str}] grader_score={score:.4f}",
         flush=True,
     )
 
 
-def build_user_prompt(
-    step: int,
-    patients_waiting: float,
-    walk_in_slots: int,
-    reserved_slots: int,
-    last_reward: float,
-    hour_context: str,
-) -> str:
-    """Build prompt for LLM decision."""
+def build_prompt(task: str, step: int, obs) -> str:
     return textwrap.dedent(
         f"""
-        ===== HOUR {step} / 8 =====
-        Clinic Status:
-          - Patients waiting: {patients_waiting:.1f}
-          - Walk-in slots available: {walk_in_slots}
-          - Reserved slots available: {reserved_slots}
-          - Last hour reward: {last_reward:.2f}
-        
-        {hour_context}
-        
-        DECISION: Choose walk-in ratio for THIS HOUR (0.1-0.9)
-        Output ONLY the number, nothing else.
+        Environment: clinic scheduling
+        Difficulty: {task}
+        Hour: {step}/8
+
+        Current state:
+        - Walk-in queue: {obs.walk_in_queue}
+        - Reserved queue: {obs.reserved_queue}
+        - Walk-in slots last hour: {obs.walk_in_slots}
+        - Reserved slots last hour: {obs.reserved_slots}
+
+        Goal:
+        Choose a walk-in capacity ratio between 0.1 and 0.9 to reduce queue buildup and no-show waste.
+
+        Reply with only one decimal number between 0.1 and 0.9.
         """
     ).strip()
 
 
-def get_model_action_with_system(
-    client: OpenAI,
-    system_prompt: str,
-    step: int,
-    patients_waiting: float,
-    walk_in_slots: int,
-    reserved_slots: int,
-    last_reward: float,
-) -> float:
-    """Get action from LLM with system prompt."""
-    hour_context = {
-        1: "Hour 1 of 8. Starting hour.",
-        2: "Hour 2 of 8. Demand ramping up.",
-        3: "[ALERT] PEAK SURGE STARTS! High arrivals expected.",
-        4: "[!!] PEAK SURGE CONTINUES! Heavy traffic.",
-        5: "[!!] PEAK SURGE ENDING! Still intense.",
-        6: "[DOWN] Back to normal demand. Clear queues.",
-        7: "Hour 7. Almost done. Final push.",
-        8: "Hour 8. FINAL HOUR. End of shift.",
-    }.get(step, "Hour X/8.")
-    
-    user_prompt = build_user_prompt(step, patients_waiting, walk_in_slots, reserved_slots, last_reward, hour_context)
-    
+def get_model_action(client: OpenAI, task: str, step: int, obs) -> float:
+    prompt = build_prompt(task, step, obs)
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": "You are an RL policy for a clinic scheduling environment. Output only a number."},
+                {"role": "user", "content": prompt},
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
-            stream=False,
         )
         text = (completion.choices[0].message.content or "").strip()
-        
-        try:
-            ratio = float(text)
-            ratio = max(0.1, min(0.9, ratio))
-            return ratio
-        except ValueError:
-            print(f"[DEBUG] Failed to parse ratio from model: {text!r}, using default 0.5", flush=True)
-            return 0.5
-    except Exception as exc:
-        print(f"[DEBUG] Model request failed: {type(exc).__name__}: {exc}", flush=True)
+        ratio = float(text)
+        return max(0.1, min(0.9, ratio))
+    except Exception:
         return 0.5
 
 
 def run_task(task: str, client: OpenAI) -> Tuple[bool, int, List[float], float]:
-    """Run a single task and return (success, steps, rewards, score)."""
-    # Create environment directly with task config
-    env_instance = ClinicSchedulerEnvironment(task=task)
-    
-    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
-    
+    env = ClinicSchedulerEnvironment(task=task, seed=42)
+    log_start(task, MODEL_NAME)
+
+    obs = env.reset(seed=42)
     rewards: List[float] = []
     steps_taken = 0
-    success = False
-    system_prompt = TASKS[task]["system_prompt"]
-    grader = TaskGrader()
-    
-    try:
-        obs = env_instance.reset()
-        last_reward = 0.0
-        
-        for step in range(1, MAX_STEPS + 1):
-            if obs.done:
-                break
-            
-            # Get LLM action with task-specific system prompt
-            walk_in_ratio = get_model_action_with_system(
-                client,
-                system_prompt,
-                step,
-                obs.patients_waiting,
-                obs.walk_in_slots,
-                obs.reserved_slots,
-                last_reward,
-            )
-            
-            action = ClinicAction(walk_in_ratio=walk_in_ratio)
-            obs = env_instance.step(action)
-            
-            reward = obs.reward or 0.0
-            rewards.append(reward)
-            steps_taken = step
-            last_reward = reward
-            
-            action_str = f"walk_in_ratio={walk_in_ratio:.2f}"
-            log_step(step=step, action=action_str, reward=reward, done=obs.done)
-            
-            if obs.done:
-                break
-        
-        # Grade the task
-        score = grader.grade(task, rewards)
-        threshold = grader.get_threshold(task)
-        success = score >= threshold
-        
-        # Validate score is in correct range
-        if score <= 0.0 or score >= 1.0:
-            print(f"[WARNING] Score {score} for task {task} is outside (0.0, 1.0)!", flush=True)
-            
-    except Exception as e:
-        print(f"[DEBUG] Error during task {task}: {e}", flush=True)
-        score = 0.05  # Minimum score on error
-        success = False
-        import traceback
-        traceback.print_exc()
-    finally:
-        log_end(task=task, success=success, steps=steps_taken, rewards=rewards, score=score)
-    
+
+    for step in range(1, MAX_STEPS + 1):
+        if obs.done:
+            break
+
+        action_value = get_model_action(client, task, step, obs)
+        action = ClinicAction(walk_in_ratio=action_value)
+
+        obs = env.step(action)
+        reward = obs.reward or 0.0
+        rewards.append(reward)
+        steps_taken = step
+
+        log_step(step, action_value, reward, obs.done)
+
+        if obs.done:
+            break
+
+    score = TaskGrader.score_episode(task, obs, rewards, steps_taken)
+    success = score >= TaskGrader.threshold(task)
+    log_end(task, success, steps_taken, rewards, score)
+
     return success, steps_taken, rewards, score
 
 
 def main() -> None:
-    """Run all 3 graded tasks."""
-    print(f"[DEBUG] Configuration:", flush=True)
-    print(f"[DEBUG]   API_KEY present: {bool(API_KEY)}", flush=True)
-    print(f"[DEBUG]   API_BASE_URL: {API_BASE_URL}", flush=True)
-    print(f"[DEBUG]   MODEL_NAME: {MODEL_NAME}", flush=True)
-    print(f"[DEBUG]", flush=True)
-    
     if not API_KEY:
-        print("[ERROR] OPENAI_API_KEY not set. Please set it in .env or environment.", flush=True)
+        print("[ERROR] OPENAI_API_KEY not set.", flush=True)
         return
-    
+
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    
-    # Run all 3 tasks
-    task_results = {}
-    for task_name in ["easy", "medium", "hard"]:
-        print(f"\n[INFO] Starting task: {task_name}", flush=True)
-        print(f"[INFO] Description: {TASKS[task_name]['description']}", flush=True)
-        
-        success, steps, rewards, score = run_task(task_name, client)
-        task_results[task_name] = {
-            "success": success,
-            "steps": steps,
-            "rewards": rewards,
-            "score": score,
-        }
-    
-    # Summary
-    print(f"\n{'='*60}", flush=True)
-    print(f"TASK SUMMARY", flush=True)
-    print(f"{'='*60}", flush=True)
-    
-    total_score = 0.0
-    for task_name in ["easy", "medium", "hard"]:
-        result = task_results[task_name]
-        status = "[PASS]" if result["success"] else "[FAIL]"
+
+    results = {}
+    for task in ["easy", "medium", "hard"]:
+        success, steps, rewards, score = run_task(task, client)
+        results[task] = {"success": success, "steps": steps, "rewards": rewards, "score": score}
+
+    print("\n" + "=" * 60)
+    print("TASK SUMMARY")
+    print("=" * 60)
+
+    total = 0.0
+    for task in ["easy", "medium", "hard"]:
+        result = results[task]
         avg_reward = sum(result["rewards"]) / len(result["rewards"]) if result["rewards"] else 0.0
-        print(
-            f"{task_name.upper():8} {status:8} score={result['score']:.4f} "
-            f"avg_reward={avg_reward:+.2f} steps={result['steps']}/8"
-        )
-        total_score += result["score"]
-    
-    avg_task_score = total_score / 3.0
-    print(f"{'='*60}", flush=True)
-    print(f"Average Score: {avg_task_score:.4f} (range 0.0-1.0)", flush=True)
-    print(f"{'='*60}", flush=True)
+        status = "[PASS]" if result["success"] else "[FAIL]"
+        print(f"{task.upper():8} {status:8} score={result['score']:.4f} avg_reward={avg_reward:+.3f} steps={result['steps']}/8")
+        total += result["score"]
+
+    print("=" * 60)
+    print(f"Average Score: {total / 3.0:.4f}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
     main()
-
