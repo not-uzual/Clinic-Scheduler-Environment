@@ -15,8 +15,8 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 MAX_STEPS = 8
-TEMPERATURE = 0.2
-MAX_TOKENS = 32
+TEMPERATURE = 0.7
+MAX_TOKENS = 256
 
 TASKS = {
     "easy": "Low demand clinic with mild variability.",
@@ -67,7 +67,7 @@ class TaskGrader:
             raw += 0.02
 
         return max(min_score, min(max_score, raw))
-    
+
     @staticmethod
     def threshold(task: str) -> float:
         return {
@@ -75,6 +75,7 @@ class TaskGrader:
             "medium": 0.52,
             "hard": 0.45,
         }[task]
+
 
 def log_start(task: str, model: str) -> None:
     print(f"[START] task={task} model={model}", flush=True)
@@ -95,67 +96,122 @@ def log_end(task: str, success: bool, steps: int, rewards: List[float], score: f
     )
 
 
-def build_prompt(task: str, step: int, obs) -> str:
+def build_system_prompt() -> str:
+    return textwrap.dedent("""
+        You are an RL policy managing a medical clinic scheduler.
+
+        Each hour you must choose a walk_in_ratio (0.1 to 0.9) that splits 10 slots:
+        - walk_in_slots = round(10 * ratio)
+        - reserved_slots = 10 - walk_in_slots
+
+        Reward signals:
+        - Serving patients earns +0.18 each
+        - Reserved queue backlog costs -0.42 each (they had appointments!)
+        - Walk-in queue backlog costs -0.28 each
+        - No-shows cost -0.60 each (wasted reserved slot)
+        - Idle slots cost -0.25 each
+        - Mismatched allocation costs -0.18
+
+        Strategy:
+        - If reserved_queue > walk_in_queue, lower the ratio (give more slots to reserved)
+        - If walk_in_queue > reserved_queue, raise the ratio (give more slots to walk-ins)
+        - During peak hours (hour 2-4), demand spikes so avoid idle slots
+        - No-shows waste reserved slots, so don't over-allocate to reserved
+        - NEVER pick 0.5 blindly. Always justify based on queue imbalance.
+        - If walk_in_queue == 0 and reserved_queue > 0: pick 0.3 or lower
+        - If reserved_queue == 0 and walk_in_queue > 0: pick 0.7 or higher
+        - If both queues are 0: pick 0.4 (expect more walk-ins than reserved)
+        - If queues are equal: pick 0.5 only then
+
+        Think step by step about the queue sizes and last reward. Then on the final line output only a single decimal number between 0.1 and 0.9.
+    """).strip()
+
+
+def build_prompt(task: str, step: int, obs, last_reward: float | None) -> str:
+    reward_line = (
+        f"- Last step reward: {last_reward:.3f}"
+        if last_reward is not None
+        else "- Last step reward: N/A (first step)"
+    )
     return textwrap.dedent(
         f"""
-        Environment: clinic scheduling
-        Difficulty: {task}
-        Hour: {step}/8
+        Difficulty: {task} | Hour: {step}/8
 
         Current state:
         - Walk-in queue: {obs.walk_in_queue}
         - Reserved queue: {obs.reserved_queue}
         - Walk-in slots last hour: {obs.walk_in_slots}
         - Reserved slots last hour: {obs.reserved_slots}
+        - Total served so far: {obs.info.get('total_served', 0)}
+        - Total no-shows so far: {obs.info.get('total_no_shows', 0)}
+        - Cumulative wait cost: {obs.info.get('cumulative_wait_cost', 0)}
+        {reward_line}
 
-        Goal:
-        Choose a walk-in capacity ratio between 0.1 and 0.9 to reduce queue buildup and no-show waste.
-
-        Reply with only one decimal number between 0.1 and 0.9.
+        What walk_in_ratio do you choose? (0.1 to 0.9)
         """
     ).strip()
 
 
-def get_model_action(client: OpenAI, task: str, step: int, obs) -> float:
-    prompt = build_prompt(task, step, obs)
+def get_model_action(
+    client: OpenAI,
+    task: str,
+    step: int,
+    obs,
+    history: list,
+    last_reward: float | None,
+) -> tuple[float, list]:
+    user_msg = build_prompt(task, step, obs, last_reward)
+    history.append({"role": "user", "content": user_msg})
+
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "You are an RL policy for a clinic scheduling environment. Output only a number."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": build_system_prompt()},
+                *history,
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
         )
         text = (completion.choices[0].message.content or "").strip()
-        ratio = float(text)
-        return max(0.1, min(0.9, ratio))
+
+        # Extract just the last line as the ratio after chain-of-thought
+        last_line = text.strip().split("\n")[-1].strip()
+        ratio = float(last_line)
+        ratio = max(0.1, min(0.9, ratio))
+
+        history.append({"role": "assistant", "content": text})
+        return ratio, history
+
     except Exception:
-        return 0.5
+        history.append({"role": "assistant", "content": "0.5"})
+        return 0.5, history
 
 
 def run_task(task: str, client: OpenAI) -> Tuple[bool, int, List[float], float]:
-    env = ClinicSchedulerEnvironment(task=task, seed=42)
+    # No fixed seed — random arrivals so agent decisions actually matter
+    env = ClinicSchedulerEnvironment(task=task)
     log_start(task, MODEL_NAME)
 
-    obs = env.reset(seed=42)
+    obs = env.reset()
     rewards: List[float] = []
     steps_taken = 0
+    history = []
+    last_reward = None
 
     for step in range(1, MAX_STEPS + 1):
         if obs.done:
             break
 
-        action_value = get_model_action(client, task, step, obs)
+        action_value, history = get_model_action(client, task, step, obs, history, last_reward)
         action = ClinicAction(walk_in_ratio=action_value)
 
         obs = env.step(action)
-        reward = obs.reward or 0.0
-        rewards.append(reward)
+        last_reward = obs.reward or 0.0
+        rewards.append(last_reward)
         steps_taken = step
 
-        log_step(step, action_value, reward, obs.done)
+        log_step(step, action_value, last_reward, obs.done)
 
         if obs.done:
             break

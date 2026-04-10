@@ -3,7 +3,7 @@ import uuid
 from typing import Optional
 
 from openenv.core.env_server import Environment
-from models import ClinicAction, ClinicObservation, ClinicState
+from clinic_scheduler.models import ClinicAction, ClinicObservation, ClinicState
 
 
 class ClinicSchedulerEnvironment(Environment):
@@ -11,6 +11,17 @@ class ClinicSchedulerEnvironment(Environment):
 
     MAX_TIME = 8
     TOTAL_SLOTS = 10
+
+    # Reward normalization constants
+    MAX_POSSIBLE_PENALTY = (
+        0.42 * 10 +  # max reserved backlog
+        0.28 * 10 +  # max walk-in backlog
+        0.60 * 6  +  # max no-shows (hard mode peak)
+        0.25 * 10 +  # max idle slots
+        0.18 * 1     # max allocation penalty
+    )  # ≈ 11.44
+    MAX_POSSIBLE_BONUS = 0.18 * 10  # = 1.8
+    NORM_FACTOR = MAX_POSSIBLE_PENALTY  # normalize by worst case
 
     def __init__(self, task: str = "medium", seed: Optional[int] = None):
         super().__init__()
@@ -121,13 +132,17 @@ class ClinicSchedulerEnvironment(Environment):
         )
         allocation_penalty = 0.18 * demand_gap
 
-        reward = (
+        raw_reward = (
             service_bonus
             - queue_penalty
             - no_show_penalty
             - idle_penalty
             - allocation_penalty
         )
+
+        # Normalize to [-1, +1]
+        reward = raw_reward / self.NORM_FACTOR
+        reward = max(-1.0, min(1.0, reward))
 
         s.cumulative_wait_cost += reserved_backlog + walk_in_backlog
         s.step_count += 1
