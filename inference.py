@@ -28,10 +28,13 @@ TASKS = {
 class TaskGrader:
     @staticmethod
     def score_episode(task: str, final_obs, rewards: list[float], steps_taken: int) -> float:
+        if not rewards:
+            return 0.01
+
         min_score = 0.01
         max_score = 0.99
 
-        avg_reward = sum(rewards) / len(rewards) if rewards else -10.0
+        avg_reward = sum(rewards) / len(rewards)
         total_no_shows = final_obs.info.get("total_no_shows", 0)
         total_served = final_obs.info.get("total_served", 0)
 
@@ -64,7 +67,7 @@ class TaskGrader:
             raw += 0.02
 
         return max(min_score, min(max_score, raw))
-
+    
     @staticmethod
     def threshold(task: str) -> float:
         return {
